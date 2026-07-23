@@ -1,311 +1,390 @@
--- ===== СИСТЕМА СКРЫТНЫХ ДЕЙСТВИЙ =====
+-- Сервисы
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
-local StealthActions = {
-    Enabled = true,
-    FakeAFK = true,           -- Имитация AFK для других
-    HideCharacter = false,    -- Скрыть персонажа (рискованно)
-    UseRemoteEvents = true,   -- Покупать через RemoteEvents
-    GhostMode = false,        -- Режим призрака (тело на базе, действия удаленно)
-    AFKPosition = nil,        -- Позиция для имитации AFK
-}
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
 
--- Сохраняем "фейковую" позицию на базе
-local function SetAFKPosition()
+print("✅ Script starting...")
+
+-- ===== ФУНКЦИИ =====
+local function GetMoney()
+    local money = 0
+    pcall(function()
+        for _, child in pairs(LocalPlayer:GetChildren()) do
+            if child:IsA("IntValue") or child:IsA("NumberValue") then
+                if child.Name:lower():find("money") or child.Name:lower():find("cash") or child.Name:lower():find("coin") then
+                    money = child.Value
+                    break
+                end
+            end
+        end
+        if money == 0 then
+            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+            if leaderstats then
+                for _, stat in pairs(leaderstats:GetChildren()) do
+                    if stat:IsA("IntValue") or stat:IsA("NumberValue") then
+                        money = stat.Value
+                        break
+                    end
+                end
+            end
+        end
+    end)
+    return money
+end
+
+local function FindButtons()
+    local buttons = {}
+    pcall(function()
+        for _, obj in pairs(Workspace:GetDescendants()) do
+            pcall(function()
+                local cd = obj:FindFirstChildOfClass("ClickDetector")
+                if cd then
+                    local name = obj.Name:lower()
+                    if name:find("rebirth") or name:find("button") or name:find("buy") then
+                        table.insert(buttons, {
+                            Object = obj,
+                            ClickDetector = cd,
+                            Position = obj:IsA("BasePart") and obj.Position or nil,
+                            Name = obj.Name
+                        })
+                    end
+                end
+            end)
+        end
+        
+        for _, remote in pairs(ReplicatedStorage:GetDescendants()) do
+            if remote:IsA("RemoteEvent") then
+                local name = remote.Name:lower()
+                if name:find("rebirth") or name:find("buy") then
+                    table.insert(buttons, {
+                        Object = remote,
+                        Type = "Remote",
+                        Name = remote.Name,
+                        Position = nil
+                    })
+                end
+            end
+        end
+    end)
+    return buttons
+end
+
+-- ===== ПЕРЕМЕННЫЕ =====
+local isFarming = false
+local isBuying = false
+local totalClicks = 0
+local totalCollected = 0
+local guiHidden = false
+local lastAction = tick()
+
+-- ===== СТЕЛС РЕЖИМ =====
+local AFKPosition = nil
+
+local function EnableAFK()
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        StealthActions.AFKPosition = LocalPlayer.Character.HumanoidRootPart.CFrame
+        AFKPosition = LocalPlayer.Character.HumanoidRootPart.CFrame
+        pcall(function()
+            local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+            if humanoid then
+                humanoid.WalkSpeed = 0
+                humanoid.JumpPower = 0
+            end
+        end)
+        print("👻 AFK Mode ON - Position saved")
     end
 end
 
--- ВАРИАНТ 1: Покупка через RemoteEvents (САМЫЙ БЕЗОПАСНЫЙ)
--- Для других вы просто стоите на месте, а покупка происходит через серверные запросы
-local function BuyViaRemote(button)
+local function DisableAFK()
+    AFKPosition = nil
     pcall(function()
-        -- Ищем RemoteEvent для покупки
-        local remotes = {}
-        
-        -- Собираем все RemoteEvents которые могут быть связаны с покупкой
-        for _, remote in pairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-            if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") then
-                local name = remote.Name:lower()
-                if name:find("buy") or 
-                   name:find("purchase") or 
-                   name:find("rebirth") or
-                   name:find("upgrade") or
-                   name:find("click") then
-                    table.insert(remotes, remote)
-                end
-            end
-        end
-        
-        -- Пробуем активировать каждый Remote
-        for _, remote in pairs(remotes) do
-            pcall(function()
-                if remote:IsA("RemoteEvent") then
-                    -- Пробуем разные аргументы
-                    local success1 = pcall(function() remote:FireServer() end)
-                    local success2 = pcall(function() remote:FireServer(button.Name) end)
-                    local success3 = pcall(function() remote:FireServer(button.Object) end)
-                elseif remote:IsA("RemoteFunction") then
-                    pcall(function() remote:InvokeServer() end)
-                end
-            end)
+        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 16
+            humanoid.JumpPower = 50
         end
     end)
+    print("👻 AFK Mode OFF")
 end
 
--- ВАРИАНТ 2: Режим "Призрака"
--- Ваш персонаж остается на базе, а покупка происходит "удаленно"
-local function GhostBuy(button)
-    if not StealthActions.AFKPosition then return false end
-    
-    local success = false
-    local realPosition = nil
-    
-    pcall(function()
-        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-            local hrp = LocalPlayer.Character.HumanoidRootPart
-            
-            -- Сохраняем реальную позицию
-            realPosition = hrp.CFrame
-            
-            -- Мгновенно телепортируемся к кнопке (невидимо для других)
-            if button.Position then
-                -- Отключаем сетевое обновление позиции
-                pcall(function()
-                    -- На некоторых эксплойтах можно отключить отправку позиции
-                    if sethiddenproperty then
-                        sethiddenproperty(LocalPlayer, "SimulationRadius", 0)
-                    end
-                end)
-                
-                -- Быстро телепортируемся
-                hrp.CFrame = CFrame.new(button.Position + Vector3.new(0, 2, 0))
-                
-                -- Активируем кнопку
-                task.wait(0.1)
-                if button.ClickDetector then
-                    -- Используем RemoteEvent если нашли
-                    BuyViaRemote(button)
-                end
-                
-                task.wait(0.1)
-                
-                -- Возвращаемся обратно
-                hrp.CFrame = realPosition
-                
-                -- Восстанавливаем сетевое обновление
-                pcall(function()
-                    if sethiddenproperty then
-                        sethiddenproperty(LocalPlayer, "SimulationRadius", 1000)
-                    end
-                end)
-                
-                success = true
-            end
-        end
-    end)
-    
-    return success
-end
-
--- ВАРИАНТ 3: Подмена сетевых пакетов (ПРОДВИНУТЫЙ)
-local function NetworkSpoofBuy(button)
-    -- Этот метод подменяет сетевые пакеты
-    -- Для сервера вы остаетесь на месте, но покупка происходит
-    
-    pcall(function()
-        -- Сохраняем текущую позицию для сервера
-        local fakePosition = StealthActions.AFKPosition or 
-            (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and 
-             LocalPlayer.Character.HumanoidRootPart.CFrame)
-        
-        -- Временно "замораживаем" отправку позиции на сервер
-        local oldIndex
-        oldIndex = hookmetamethod(game, "__index", function(self, key)
-            if self == LocalPlayer.Character and 
-               LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and
-               key == "CFrame" then
-                -- Сервер всегда видит фейковую позицию
-                return fakePosition
-            end
-            return oldIndex(self, key)
+local function BuyRemote(button)
+    if button.Type == "Remote" then
+        pcall(function()
+            button.Object:FireServer()
+            totalClicks = totalClicks + 1
+            print("🌐 Remote buy: " .. button.Name)
         end)
-        
-        -- Теперь можно делать что угодно - сервер не увидит
-        
-        -- Выполняем покупку
-        if button.ClickDetector then
-            -- Активируем через RemoteEvent
-            BuyViaRemote(button)
-        end
-        
-        task.wait(0.5)
-        
-        -- Восстанавливаем нормальную работу
-        hookmetamethod(game, "__index", oldIndex)
-    end)
-end
-
--- ВАРИАНТ 4: Имитация AFK с фоновой работой
-local function AFKSimulation()
-    if not StealthActions.AFKPosition then return end
-    
-    task.spawn(function()
-        while StealthActions.FakeAFK do
-            pcall(function()
-                if LocalPlayer.Character then
-                    local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-                    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    
-                    if humanoid and hrp then
-                        -- Делаем вид что мы AFK
-                        humanoid.WalkSpeed = 0
-                        humanoid.JumpPower = 0
-                        
-                        -- Иногда делаем микро-движения (как настоящий AFK)
-                        if math.random(1, 30) == 1 then
-                            hrp.CFrame = StealthActions.AFKPosition * 
-                                        CFrame.Angles(0, math.rad(math.random(-5, 5)), 0)
-                            task.wait(0.5)
-                            hrp.CFrame = StealthActions.AFKPosition
-                        end
-                    end
-                end
-            end)
-            task.wait(5)
-        end
-    end)
-end
-
--- ОБНОВЛЕННАЯ ФУНКЦИЯ ПОКУПКИ (СКРЫТНАЯ ВЕРСИЯ)
-local function StealthBuy(button)
-    -- Сначала пробуем купить через RemoteEvent (САМЫЙ БЕЗОПАСНЫЙ)
-    if StealthActions.UseRemoteEvents then
-        BuyViaRemote(button)
         return true
     end
     
-    -- Если не получилось, пробуем Ghost Mode
-    if StealthActions.GhostMode and StealthActions.AFKPosition then
-        return GhostBuy(button)
+    if button.ClickDetector then
+        -- Ищем RemoteEvent для этой кнопки
+        pcall(function()
+            for _, remote in pairs(ReplicatedStorage:GetDescendants()) do
+                if remote:IsA("RemoteEvent") and remote.Name:lower():find("click") then
+                    remote:FireServer(button.Object)
+                    totalClicks = totalClicks + 1
+                    print("🌐 Remote buy via click: " .. button.Name)
+                    return true
+                end
+            end
+        end)
     end
     
     return false
 end
 
--- ВКЛЮЧЕНИЕ РЕЖИМА AFK ДЛЯ ДРУГИХ
-local function EnableAFKMode()
-    SetAFKPosition()
-    StealthActions.FakeAFK = true
+-- ===== GUI =====
+local function CreateGUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "StealthGUI_Main"
+    gui.Parent = CoreGui
+    gui.ResetOnSpawn = false
     
-    print("👻 AFK Mode: You appear AFK to other players")
-    print("📍 Your visible position is frozen at spawn")
-    print("🤫 All purchases will happen silently")
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 250, 0, 180)
+    mainFrame.Position = UDim2.new(1, -260, 0, 10)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    mainFrame.Parent = gui
     
-    -- Запускаем имитацию AFK
-    AFKSimulation()
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = mainFrame
     
-    -- Замораживаем персонажа на месте
-    pcall(function()
-        if LocalPlayer.Character then
-            local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-            
-            if hrp and humanoid then
-                hrp.Anchored = false -- Не анкорим, иначе палевно
-                humanoid.WalkSpeed = 0
-                humanoid.JumpPower = 0
-            end
-        end
-    end)
-end
-
--- GUI ДЛЯ УПРАВЛЕНИЯ РЕЖИМАМИ
-local function CreateAFKControlGUI()
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 200, 0, 100)
-    frame.Position = UDim2.new(1, -210, 0, 140)
-    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    frame.BackgroundTransparency = 0.3
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Draggable = true
-    frame.Parent = GUI.Frame.Parent
-    
+    -- Заголовок
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 20)
-    title.BackgroundTransparency = 1
-    title.Text = "👻 GHOST SETTINGS"
+    title.Size = UDim2.new(1, 0, 0, 25)
+    title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    title.Text = "🛡️ STEALTH FARM v3"
     title.TextColor3 = Color3.new(1, 1, 1)
     title.Font = Enum.Font.GothamBold
-    title.TextSize = 10
-    title.Parent = frame
+    title.TextSize = 12
+    title.Parent = mainFrame
     
-    -- Режим AFK
-    local afkBtn = Instance.new("TextButton")
-    afkBtn.Size = UDim2.new(1, -10, 0, 22)
-    afkBtn.Position = UDim2.new(0, 5, 0, 25)
-    afkBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-    afkBtn.Text = "👻 TOGGLE AFK MODE"
-    afkBtn.TextColor3 = Color3.new(1, 1, 1)
-    afkBtn.Font = Enum.Font.GothamBold
-    afkBtn.TextSize = 10
-    afkBtn.Parent = frame
+    -- Деньги
+    local moneyLabel = Instance.new("TextLabel")
+    moneyLabel.Name = "MoneyLabel"
+    moneyLabel.Size = UDim2.new(1, -20, 0, 25)
+    moneyLabel.Position = UDim2.new(0, 10, 0, 30)
+    moneyLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    moneyLabel.Text = "💵 Money: " .. GetMoney()
+    moneyLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+    moneyLabel.Font = Enum.Font.GothamBold
+    moneyLabel.TextSize = 14
+    moneyLabel.Parent = mainFrame
     
-    -- RemoteEvent Mode
-    local remoteBtn = Instance.new("TextButton")
-    remoteBtn.Size = UDim2.new(1, -10, 0, 22)
-    remoteBtn.Position = UDim2.new(0, 5, 0, 52)
-    remoteBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
-    remoteBtn.Text = "🌐 REMOTE BUY MODE"
-    remoteBtn.TextColor3 = Color3.new(1, 1, 1)
-    remoteBtn.Font = Enum.Font.GothamBold
-    remoteBtn.TextSize = 10
-    remoteBtn.Parent = frame
+    local moneyCorner = Instance.new("UICorner")
+    moneyCorner.CornerRadius = UDim.new(0, 4)
+    moneyCorner.Parent = moneyLabel
+    
+    -- Статус
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(1, -20, 0, 20)
+    statusLabel.Position = UDim2.new(0, 10, 0, 60)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Status: READY"
+    statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextSize = 11
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.Parent = mainFrame
     
     -- Кнопки
-    afkBtn.MouseButton1Click:Connect(function()
-        StealthActions.FakeAFK = not StealthActions.FakeAFK
-        if StealthActions.FakeAFK then
-            EnableAFKMode()
-            afkBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
-            afkBtn.Text = "👻 AFK MODE: ON"
-        else
-            afkBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-            afkBtn.Text = "👻 TOGGLE AFK MODE"
-            pcall(function()
-                if LocalPlayer.Character then
-                    local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-                    if humanoid then
-                        humanoid.WalkSpeed = 16
-                        humanoid.JumpPower = 50
-                    end
-                end
-            end)
-        end
-    end)
+    local afkBtn = Instance.new("TextButton")
+    afkBtn.Name = "AFKBtn"
+    afkBtn.Size = UDim2.new(1, -20, 0, 25)
+    afkBtn.Position = UDim2.new(0, 10, 0, 85)
+    afkBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    afkBtn.Text = "👻 AFK MODE: OFF"
+    afkBtn.TextColor3 = Color3.new(1, 1, 1)
+    afkBtn.Font = Enum.Font.GothamBold
+    afkBtn.TextSize = 11
+    afkBtn.Parent = mainFrame
     
-    remoteBtn.MouseButton1Click:Connect(function()
-        StealthActions.UseRemoteEvents = not StealthActions.UseRemoteEvents
-        remoteBtn.BackgroundColor3 = StealthActions.UseRemoteEvents and 
-            Color3.fromRGB(46, 204, 113) or Color3.fromRGB(52, 152, 219)
-        remoteBtn.Text = StealthActions.UseRemoteEvents and 
-            "🌐 REMOTE MODE: ON" or "🌐 REMOTE BUY MODE"
-    end)
+    local afkCorner = Instance.new("UICorner")
+    afkCorner.CornerRadius = UDim.new(0, 4)
+    afkCorner.Parent = afkBtn
     
-    return frame
+    local buyBtn = Instance.new("TextButton")
+    buyBtn.Name = "BuyBtn"
+    buyBtn.Size = UDim2.new(1, -20, 0, 25)
+    buyBtn.Position = UDim2.new(0, 10, 0, 113)
+    buyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
+    buyBtn.Text = "🛒 START BUY (B)"
+    buyBtn.TextColor3 = Color3.new(1, 1, 1)
+    buyBtn.Font = Enum.Font.GothamBold
+    buyBtn.TextSize = 11
+    buyBtn.Parent = mainFrame
+    
+    local buyCorner = Instance.new("UICorner")
+    buyCorner.CornerRadius = UDim.new(0, 4)
+    buyCorner.Parent = buyBtn
+    
+    local panicBtn = Instance.new("TextButton")
+    panicBtn.Name = "PanicBtn"
+    panicBtn.Size = UDim2.new(1, -20, 0, 25)
+    panicBtn.Position = UDim2.new(0, 10, 0, 141)
+    panicBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
+    panicBtn.Text = "🛑 PANIC STOP (DELETE)"
+    panicBtn.TextColor3 = Color3.new(1, 1, 1)
+    panicBtn.Font = Enum.Font.GothamBold
+    panicBtn.TextSize = 11
+    panicBtn.Parent = mainFrame
+    
+    local panicCorner = Instance.new("UICorner")
+    panicCorner.CornerRadius = UDim.new(0, 4)
+    panicCorner.Parent = panicBtn
+    
+    return {
+        Gui = gui,
+        Frame = mainFrame,
+        MoneyLabel = moneyLabel,
+        StatusLabel = statusLabel,
+        AFKBtn = afkBtn,
+        BuyBtn = buyBtn,
+        PanicBtn = panicBtn
+    }
 end
 
--- Инициализация
-local afkControlGUI = CreateAFKControlGUI()
+-- Создаем GUI
+local GUI = CreateGUI()
+print("✅ GUI created")
 
-print("👻 Stealth Features Active:")
-print("   📍 AFK Mode - You appear frozen at spawn")
-print("   🌐 Remote Buy - Purchase without moving")
-print("   👤 Ghost Mode - Invisible actions")
-print("")
-print("🎮 How to use:")
-print("   1. Stand at spawn/base")
-print("   2. Enable AFK Mode")
-print("   3. Enable Remote Buy")
-print("   4. Start buying - others see you as AFK!")
+-- ===== ОБРАБОТЧИКИ КНОПОК =====
+GUI.AFKBtn.MouseButton1Click:Connect(function()
+    if AFKPosition then
+        DisableAFK()
+        GUI.AFKBtn.Text = "👻 AFK MODE: OFF"
+        GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    else
+        EnableAFK()
+        GUI.AFKBtn.Text = "👻 AFK MODE: ON"
+        GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+    end
+end)
+
+GUI.BuyBtn.MouseButton1Click:Connect(function()
+    isBuying = not isBuying
+    if isBuying then
+        GUI.BuyBtn.Text = "🛒 STOP BUY (B)"
+        GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
+        GUI.StatusLabel.Text = "Status: BUYING..."
+        GUI.StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 255)
+        print("🛒 Buying started")
+    else
+        GUI.BuyBtn.Text = "🛒 START BUY (B)"
+        GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
+        GUI.StatusLabel.Text = "Status: STOPPED"
+        GUI.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+        print("🛒 Buying stopped")
+    end
+end)
+
+GUI.PanicBtn.MouseButton1Click:Connect(function()
+    isBuying = false
+    isFarming = false
+    GUI.Frame.Visible = false
+    DisableAFK()
+    print("🛑 PANIC! All stopped")
+end)
+
+-- ===== ГОРЯЧИЕ КЛАВИШИ =====
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    
+    if input.KeyCode == Enum.KeyCode.B then
+        -- Переключаем покупку
+        isBuying = not isBuying
+        if isBuying then
+            GUI.BuyBtn.Text = "🛒 STOP BUY (B)"
+            GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
+            GUI.StatusLabel.Text = "Status: BUYING..."
+            GUI.StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 255)
+        else
+            GUI.BuyBtn.Text = "🛒 START BUY (B)"
+            GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
+            GUI.StatusLabel.Text = "Status: STOPPED"
+            GUI.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
+        end
+    elseif input.KeyCode == Enum.KeyCode.G then
+        -- AFK переключение
+        if AFKPosition then
+            DisableAFK()
+            GUI.AFKBtn.Text = "👻 AFK MODE: OFF"
+            GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+        else
+            EnableAFK()
+            GUI.AFKBtn.Text = "👻 AFK MODE: ON"
+            GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+        end
+    elseif input.KeyCode == Enum.KeyCode.Delete then
+        -- Паника
+        isBuying = false
+        isFarming = false
+        GUI.Frame.Visible = false
+        DisableAFK()
+        print("🛑 PANIC DELETE! All stopped")
+    elseif input.KeyCode == Enum.KeyCode.RightControl then
+        -- Скрыть/показать GUI
+        GUI.Frame.Visible = not GUI.Frame.Visible
+    end
+end)
+
+-- ===== ГЛАВНЫЙ ЦИКЛ ПОКУПКИ =====
+task.spawn(function()
+    while true do
+        if isBuying then
+            pcall(function()
+                local buttons = FindButtons()
+                
+                if #buttons > 0 then
+                    -- Сортируем ближайшие
+                    if AFKPosition == nil and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local hrp = LocalPlayer.Character.HumanoidRootPart
+                        table.sort(buttons, function(a, b)
+                            if not a.Position or not b.Position then return false end
+                            return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
+                        end)
+                    end
+                    
+                    -- Покупаем через Remote
+                    if #buttons > 0 then
+                        BuyRemote(buttons[1])
+                    end
+                else
+                    GUI.StatusLabel.Text = "Status: Searching..."
+                end
+                
+                -- Обновляем GUI
+                GUI.MoneyLabel.Text = "💵 Money: " .. GetMoney()
+                
+                -- Случайная задержка 2-4 секунды
+                task.wait(math.random(20, 40) / 10)
+            end)
+        else
+            task.wait(1)
+        end
+    end
+end)
+
+print("=" .. string.rep("=", 50))
+print("✅ SCRIPT LOADED SUCCESSFULLY!")
+print("📋 Controls:")
+print("   B - Start/Stop Buying")
+print("   G - Toggle AFK Mode")
+print("   Delete - Panic Stop")
+print("   RightCtrl - Hide GUI")
+print("=" .. string.rep("=", 50))
