@@ -1,390 +1,281 @@
--- Сервисы
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local CoreGui = game:GetService("CoreGui")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local TweenService = game:GetService("TweenService")
-local MarketplaceService = game:GetService("MarketplaceService")
+-- ===== БЕЗОПАСНЫЙ АВТО-СБОР (НЕ ВЗЛАМЫВАЕТ ДОНАТ) =====
 
-local LocalPlayer = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
+local AutoCollect = {
+    Enabled = false,
+    Range = 50,              -- Радиус сбора
+    Speed = 1,               -- Скорость (1 = медленно, 5 = быстро)
+    CollectCoins = true,     -- Собирать монеты
+    CollectGems = true,      -- Собирать гемы
+    CollectCrates = true,    -- Собирать ящики
+    UseTouchMethod = true,   -- Метод касания (безопаснее)
+    AvoidDonateButton = true,-- НЕ трогать донатную кнопку!
+}
 
-print("✅ Script starting...")
-
--- ===== ФУНКЦИИ =====
-local function GetMoney()
-    local money = 0
-    pcall(function()
-        for _, child in pairs(LocalPlayer:GetChildren()) do
-            if child:IsA("IntValue") or child:IsA("NumberValue") then
-                if child.Name:lower():find("money") or child.Name:lower():find("cash") or child.Name:lower():find("coin") then
-                    money = child.Value
-                    break
-                end
-            end
-        end
-        if money == 0 then
-            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-            if leaderstats then
-                for _, stat in pairs(leaderstats:GetChildren()) do
-                    if stat:IsA("IntValue") or stat:IsA("NumberValue") then
-                        money = stat.Value
-                        break
-                    end
-                end
-            end
-        end
-    end)
-    return money
-end
-
-local function FindButtons()
-    local buttons = {}
+-- Поиск предметов для сбора (как донат, но без взлома)
+local function FindCollectibles()
+    local items = {}
+    
     pcall(function()
         for _, obj in pairs(Workspace:GetDescendants()) do
-            pcall(function()
-                local cd = obj:FindFirstChildOfClass("ClickDetector")
-                if cd then
-                    local name = obj.Name:lower()
-                    if name:find("rebirth") or name:find("button") or name:find("buy") then
-                        table.insert(buttons, {
+            if obj:IsA("BasePart") and obj.Transparency < 1 then
+                local name = obj.Name:lower()
+                local canCollect = false
+                local itemType = "Unknown"
+                
+                -- Определяем тип предмета
+                if AutoCollect.CollectCoins and (name:find("coin") or name:find("money")) then
+                    canCollect = true
+                    itemType = "Coin"
+                elseif AutoCollect.CollectGems and (name:find("gem") or name:find("diamond")) then
+                    canCollect = true
+                    itemType = "Gem"
+                elseif AutoCollect.CollectCrates and (name:find("crate") or name:find("chest") or name:find("box")) then
+                    canCollect = true
+                    itemType = "Crate"
+                end
+                
+                -- ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: не трогаем донатные объекты!
+                if AutoCollect.AvoidDonateButton then
+                    if name:find("donate") or name:find("premium") or name:find("vip") or name:find("gamepass") then
+                        canCollect = false
+                    end
+                end
+                
+                -- Проверяем что предмет можно собрать
+                if canCollect then
+                    local hasTouch = obj:FindFirstChildOfClass("TouchTransmitter") ~= nil
+                    local hasClick = obj:FindFirstChildOfClass("ClickDetector") ~= nil
+                    local hasProximity = obj:FindFirstChildOfClass("ProximityPrompt") ~= nil
+                    
+                    if hasTouch or hasClick or hasProximity then
+                        table.insert(items, {
                             Object = obj,
-                            ClickDetector = cd,
-                            Position = obj:IsA("BasePart") and obj.Position or nil,
-                            Name = obj.Name
+                            Position = obj.Position,
+                            Type = itemType,
+                            HasTouch = hasTouch,
+                            HasClick = hasClick,
+                            HasProximity = hasProximity
                         })
                     end
                 end
-            end)
-        end
-        
-        for _, remote in pairs(ReplicatedStorage:GetDescendants()) do
-            if remote:IsA("RemoteEvent") then
-                local name = remote.Name:lower()
-                if name:find("rebirth") or name:find("buy") then
-                    table.insert(buttons, {
-                        Object = remote,
-                        Type = "Remote",
-                        Name = remote.Name,
-                        Position = nil
-                    })
-                end
             end
         end
     end)
-    return buttons
+    
+    return items
 end
 
--- ===== ПЕРЕМЕННЫЕ =====
-local isFarming = false
-local isBuying = false
-local totalClicks = 0
-local totalCollected = 0
-local guiHidden = false
-local lastAction = tick()
-
--- ===== СТЕЛС РЕЖИМ =====
-local AFKPosition = nil
-
-local function EnableAFK()
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        AFKPosition = LocalPlayer.Character.HumanoidRootPart.CFrame
-        pcall(function()
-            local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-            if humanoid then
-                humanoid.WalkSpeed = 0
-                humanoid.JumpPower = 0
-            end
-        end)
-        print("👻 AFK Mode ON - Position saved")
-    end
-end
-
-local function DisableAFK()
-    AFKPosition = nil
+-- Безопасный сбор предмета (НЕ через взлом доната)
+local function SafeCollect(item)
+    local success = false
+    
     pcall(function()
-        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.WalkSpeed = 16
-            humanoid.JumpPower = 50
-        end
-    end)
-    print("👻 AFK Mode OFF")
-end
-
-local function BuyRemote(button)
-    if button.Type == "Remote" then
-        pcall(function()
-            button.Object:FireServer()
-            totalClicks = totalClicks + 1
-            print("🌐 Remote buy: " .. button.Name)
-        end)
-        return true
-    end
-    
-    if button.ClickDetector then
-        -- Ищем RemoteEvent для этой кнопки
-        pcall(function()
-            for _, remote in pairs(ReplicatedStorage:GetDescendants()) do
-                if remote:IsA("RemoteEvent") and remote.Name:lower():find("click") then
-                    remote:FireServer(button.Object)
-                    totalClicks = totalClicks + 1
-                    print("🌐 Remote buy via click: " .. button.Name)
-                    return true
+        if not LocalPlayer.Character then return end
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        
+        local distance = (item.Position - hrp.Position).Magnitude
+        
+        if distance <= AutoCollect.Range then
+            -- Метод 1: Через касание (самый безопасный)
+            if item.HasTouch and AutoCollect.UseTouchMethod then
+                -- Плавно подходим
+                local tween = TweenService:Create(hrp, 
+                    TweenInfo.new(distance / (50 * AutoCollect.Speed)), 
+                    {CFrame = CFrame.new(item.Position + Vector3.new(0, 3, 0))})
+                tween:Play()
+                task.wait(0.5)
+                
+                -- Прыжок для активации касания
+                local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+                if humanoid then
+                    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    task.wait(0.3)
+                    humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+                end
+                
+                success = true
+            end
+            
+            -- Метод 2: Через ClickDetector (если есть)
+            if item.HasClick and not success then
+                local screenPos = Camera:WorldToScreenPoint(item.Position)
+                VirtualInputManager:SendMouseButtonEvent(screenPos.X, screenPos.Y, 0, true, nil, 0)
+                task.wait(0.1)
+                VirtualInputManager:SendMouseButtonEvent(screenPos.X, screenPos.Y, 0, false, nil, 0)
+                success = true
+            end
+            
+            -- Метод 3: Через ProximityPrompt (если есть)
+            if item.HasProximity and not success then
+                local prompt = item.Object:FindFirstChildOfClass("ProximityPrompt")
+                if prompt then
+                    -- Активируем через InputHold
+                    pcall(function()
+                        prompt:InputHoldBegin()
+                        task.wait(0.3)
+                        prompt:InputHoldEnd()
+                    end)
+                    success = true
                 end
             end
-        end)
-    end
+        end
+    end)
     
-    return false
+    return success
 end
 
--- ===== GUI =====
-local function CreateGUI()
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "StealthGUI_Main"
-    gui.Parent = CoreGui
-    gui.ResetOnSpawn = false
+-- ===== GUI ДЛЯ АВТО-СБОРА =====
+local function AddAutoCollectGUI(existingGUI)
+    -- Добавляем новую секцию в существующий GUI
+    local collectFrame = Instance.new("Frame")
+    collectFrame.Size = UDim2.new(1, -20, 0, 80)
+    collectFrame.Position = UDim2.new(0, 10, 0, 170)
+    collectFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    collectFrame.Parent = existingGUI.Frame
     
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 250, 0, 180)
-    mainFrame.Position = UDim2.new(1, -260, 0, 10)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Active = true
-    mainFrame.Draggable = true
-    mainFrame.Parent = gui
+    local collectCorner = Instance.new("UICorner")
+    collectCorner.CornerRadius = UDim.new(0, 4)
+    collectCorner.Parent = collectFrame
     
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = mainFrame
+    local collectTitle = Instance.new("TextLabel")
+    collectTitle.Size = UDim2.new(1, 0, 0, 20)
+    collectTitle.BackgroundTransparency = 1
+    collectTitle.Text = "🎁 AUTO COLLECT (Free)"
+    collectTitle.TextColor3 = Color3.new(1, 1, 1)
+    collectTitle.Font = Enum.Font.GothamBold
+    collectTitle.TextSize = 10
+    collectTitle.Parent = collectFrame
     
-    -- Заголовок
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 25)
-    title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    title.Text = "🛡️ STEALTH FARM v3"
-    title.TextColor3 = Color3.new(1, 1, 1)
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 12
-    title.Parent = mainFrame
+    local collectBtn = Instance.new("TextButton")
+    collectBtn.Size = UDim2.new(1, -10, 0, 22)
+    collectBtn.Position = UDim2.new(0, 5, 0, 22)
+    collectBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+    collectBtn.Text = "🎁 AUTO COLLECT: OFF"
+    collectBtn.TextColor3 = Color3.new(1, 1, 1)
+    collectBtn.Font = Enum.Font.GothamBold
+    collectBtn.TextSize = 10
+    collectBtn.Parent = collectFrame
     
-    -- Деньги
-    local moneyLabel = Instance.new("TextLabel")
-    moneyLabel.Name = "MoneyLabel"
-    moneyLabel.Size = UDim2.new(1, -20, 0, 25)
-    moneyLabel.Position = UDim2.new(0, 10, 0, 30)
-    moneyLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    moneyLabel.Text = "💵 Money: " .. GetMoney()
-    moneyLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
-    moneyLabel.Font = Enum.Font.GothamBold
-    moneyLabel.TextSize = 14
-    moneyLabel.Parent = mainFrame
+    local collectCorner2 = Instance.new("UICorner")
+    collectCorner2.CornerRadius = UDim.new(0, 3)
+    collectCorner2.Parent = collectBtn
     
-    local moneyCorner = Instance.new("UICorner")
-    moneyCorner.CornerRadius = UDim.new(0, 4)
-    moneyCorner.Parent = moneyLabel
+    -- Статус сбора
+    local collectStatus = Instance.new("TextLabel")
+    collectStatus.Size = UDim2.new(1, -10, 0, 15)
+    collectStatus.Position = UDim2.new(0, 5, 0, 48)
+    collectStatus.BackgroundTransparency = 1
+    collectStatus.Text = "Items: 0 | Range: " .. AutoCollect.Range
+    collectStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+    collectStatus.Font = Enum.Font.Gotham
+    collectStatus.TextSize = 9
+    collectStatus.TextXAlignment = Enum.TextXAlignment.Left
+    collectStatus.Parent = collectFrame
     
-    -- Статус
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Name = "StatusLabel"
-    statusLabel.Size = UDim2.new(1, -20, 0, 20)
-    statusLabel.Position = UDim2.new(0, 10, 0, 60)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "Status: READY"
-    statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.TextSize = 11
-    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-    statusLabel.Parent = mainFrame
+    -- Слайдер радиуса
+    local rangeLabel = Instance.new("TextLabel")
+    rangeLabel.Size = UDim2.new(0, 40, 0, 15)
+    rangeLabel.Position = UDim2.new(0, 5, 0, 63)
+    rangeLabel.BackgroundTransparency = 1
+    rangeLabel.Text = "Range:"
+    rangeLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    rangeLabel.Font = Enum.Font.Gotham
+    rangeLabel.TextSize = 9
+    rangeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    rangeLabel.Parent = collectFrame
     
-    -- Кнопки
-    local afkBtn = Instance.new("TextButton")
-    afkBtn.Name = "AFKBtn"
-    afkBtn.Size = UDim2.new(1, -20, 0, 25)
-    afkBtn.Position = UDim2.new(0, 10, 0, 85)
-    afkBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-    afkBtn.Text = "👻 AFK MODE: OFF"
-    afkBtn.TextColor3 = Color3.new(1, 1, 1)
-    afkBtn.Font = Enum.Font.GothamBold
-    afkBtn.TextSize = 11
-    afkBtn.Parent = mainFrame
+    local rangeSlider = Instance.new("TextBox")
+    rangeSlider.Size = UDim2.new(1, -50, 0, 15)
+    rangeSlider.Position = UDim2.new(0, 45, 0, 63)
+    rangeSlider.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    rangeSlider.Text = tostring(AutoCollect.Range)
+    rangeSlider.TextColor3 = Color3.new(1, 1, 1)
+    rangeSlider.Font = Enum.Font.Gotham
+    rangeSlider.TextSize = 9
+    rangeSlider.Parent = collectFrame
     
-    local afkCorner = Instance.new("UICorner")
-    afkCorner.CornerRadius = UDim.new(0, 4)
-    afkCorner.Parent = afkBtn
+    -- Обработчики
+    local isCollecting = false
     
-    local buyBtn = Instance.new("TextButton")
-    buyBtn.Name = "BuyBtn"
-    buyBtn.Size = UDim2.new(1, -20, 0, 25)
-    buyBtn.Position = UDim2.new(0, 10, 0, 113)
-    buyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
-    buyBtn.Text = "🛒 START BUY (B)"
-    buyBtn.TextColor3 = Color3.new(1, 1, 1)
-    buyBtn.Font = Enum.Font.GothamBold
-    buyBtn.TextSize = 11
-    buyBtn.Parent = mainFrame
+    collectBtn.MouseButton1Click:Connect(function()
+        isCollecting = not isCollecting
+        if isCollecting then
+            collectBtn.Text = "🎁 AUTO COLLECT: ON"
+            collectBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
+        else
+            collectBtn.Text = "🎁 AUTO COLLECT: OFF"
+            collectBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+        end
+    end)
     
-    local buyCorner = Instance.new("UICorner")
-    buyCorner.CornerRadius = UDim.new(0, 4)
-    buyCorner.Parent = buyBtn
+    rangeSlider.FocusLost:Connect(function()
+        local newRange = tonumber(rangeSlider.Text)
+        if newRange and newRange > 0 and newRange <= 200 then
+            AutoCollect.Range = newRange
+            collectStatus.Text = "Items: ? | Range: " .. AutoCollect.Range
+        end
+    end)
     
-    local panicBtn = Instance.new("TextButton")
-    panicBtn.Name = "PanicBtn"
-    panicBtn.Size = UDim2.new(1, -20, 0, 25)
-    panicBtn.Position = UDim2.new(0, 10, 0, 141)
-    panicBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
-    panicBtn.Text = "🛑 PANIC STOP (DELETE)"
-    panicBtn.TextColor3 = Color3.new(1, 1, 1)
-    panicBtn.Font = Enum.Font.GothamBold
-    panicBtn.TextSize = 11
-    panicBtn.Parent = mainFrame
+    -- Цикл авто-сбора
+    task.spawn(function()
+        while true do
+            if isCollecting then
+                pcall(function()
+                    local items = FindCollectibles()
+                    
+                    if #items > 0 then
+                        -- Сортируем по расстоянию
+                        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                            local hrp = LocalPlayer.Character.HumanoidRootPart
+                            table.sort(items, function(a, b)
+                                return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
+                            end)
+                        end
+                        
+                        -- Собираем ближайшие 3 предмета
+                        local collected = 0
+                        for i = 1, math.min(3, #items) do
+                            if SafeCollect(items[i]) then
+                                collected = collected + 1
+                            end
+                            task.wait(math.random(5, 15) / 10) -- Задержка 0.5-1.5с
+                        end
+                        
+                        collectStatus.Text = "Items: " .. #items .. " | Range: " .. AutoCollect.Range
+                    else
+                        collectStatus.Text = "Searching... | Range: " .. AutoCollect.Range
+                    end
+                end)
+            end
+            
+            -- Частота проверки зависит от скорости
+            task.wait(2 / AutoCollect.Speed)
+        end
+    end)
     
-    local panicCorner = Instance.new("UICorner")
-    panicCorner.CornerRadius = UDim.new(0, 4)
-    panicCorner.Parent = panicBtn
-    
-    return {
-        Gui = gui,
-        Frame = mainFrame,
-        MoneyLabel = moneyLabel,
-        StatusLabel = statusLabel,
-        AFKBtn = afkBtn,
-        BuyBtn = buyBtn,
-        PanicBtn = panicBtn
-    }
+    return collectFrame
 end
 
--- Создаем GUI
-local GUI = CreateGUI()
-print("✅ GUI created")
+-- Добавляем в основной GUI
+AddAutoCollectGUI(GUI)
 
--- ===== ОБРАБОТЧИКИ КНОПОК =====
-GUI.AFKBtn.MouseButton1Click:Connect(function()
-    if AFKPosition then
-        DisableAFK()
-        GUI.AFKBtn.Text = "👻 AFK MODE: OFF"
-        GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-    else
-        EnableAFK()
-        GUI.AFKBtn.Text = "👻 AFK MODE: ON"
-        GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
-    end
-end)
+-- Увеличиваем размер главного фрейма
+GUI.Frame.Size = UDim2.new(0, 250, 0, 260)
 
-GUI.BuyBtn.MouseButton1Click:Connect(function()
-    isBuying = not isBuying
-    if isBuying then
-        GUI.BuyBtn.Text = "🛒 STOP BUY (B)"
-        GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
-        GUI.StatusLabel.Text = "Status: BUYING..."
-        GUI.StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 255)
-        print("🛒 Buying started")
-    else
-        GUI.BuyBtn.Text = "🛒 START BUY (B)"
-        GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
-        GUI.StatusLabel.Text = "Status: STOPPED"
-        GUI.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
-        print("🛒 Buying stopped")
-    end
-end)
-
-GUI.PanicBtn.MouseButton1Click:Connect(function()
-    isBuying = false
-    isFarming = false
-    GUI.Frame.Visible = false
-    DisableAFK()
-    print("🛑 PANIC! All stopped")
-end)
-
--- ===== ГОРЯЧИЕ КЛАВИШИ =====
+-- Горячая клавиша для авто-сбора
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    
-    if input.KeyCode == Enum.KeyCode.B then
-        -- Переключаем покупку
-        isBuying = not isBuying
-        if isBuying then
-            GUI.BuyBtn.Text = "🛒 STOP BUY (B)"
-            GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(231, 76, 60)
-            GUI.StatusLabel.Text = "Status: BUYING..."
-            GUI.StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 255)
-        else
-            GUI.BuyBtn.Text = "🛒 START BUY (B)"
-            GUI.BuyBtn.BackgroundColor3 = Color3.fromRGB(52, 152, 219)
-            GUI.StatusLabel.Text = "Status: STOPPED"
-            GUI.StatusLabel.TextColor3 = Color3.fromRGB(255, 200, 0)
-        end
-    elseif input.KeyCode == Enum.KeyCode.G then
-        -- AFK переключение
-        if AFKPosition then
-            DisableAFK()
-            GUI.AFKBtn.Text = "👻 AFK MODE: OFF"
-            GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
-        else
-            EnableAFK()
-            GUI.AFKBtn.Text = "👻 AFK MODE: ON"
-            GUI.AFKBtn.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
-        end
-    elseif input.KeyCode == Enum.KeyCode.Delete then
-        -- Паника
-        isBuying = false
-        isFarming = false
-        GUI.Frame.Visible = false
-        DisableAFK()
-        print("🛑 PANIC DELETE! All stopped")
-    elseif input.KeyCode == Enum.KeyCode.RightControl then
-        -- Скрыть/показать GUI
-        GUI.Frame.Visible = not GUI.Frame.Visible
-    end
-end)
-
--- ===== ГЛАВНЫЙ ЦИКЛ ПОКУПКИ =====
-task.spawn(function()
-    while true do
-        if isBuying then
-            pcall(function()
-                local buttons = FindButtons()
-                
-                if #buttons > 0 then
-                    -- Сортируем ближайшие
-                    if AFKPosition == nil and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                        local hrp = LocalPlayer.Character.HumanoidRootPart
-                        table.sort(buttons, function(a, b)
-                            if not a.Position or not b.Position then return false end
-                            return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
-                        end)
-                    end
-                    
-                    -- Покупаем через Remote
-                    if #buttons > 0 then
-                        BuyRemote(buttons[1])
-                    end
-                else
-                    GUI.StatusLabel.Text = "Status: Searching..."
-                end
-                
-                -- Обновляем GUI
-                GUI.MoneyLabel.Text = "💵 Money: " .. GetMoney()
-                
-                -- Случайная задержка 2-4 секунды
-                task.wait(math.random(20, 40) / 10)
-            end)
-        else
-            task.wait(1)
+    if input.KeyCode == Enum.KeyCode.C then
+        -- Переключаем авто-сбор
+        local collectBtn = GUI.Frame:FindFirstChild("CollectBtn", true)
+        if collectBtn then
+            collectBtn.Text = collectBtn.Text:find("OFF") and "🎁 AUTO COLLECT: ON" or "🎁 AUTO COLLECT: OFF"
         end
     end
 end)
 
-print("=" .. string.rep("=", 50))
-print("✅ SCRIPT LOADED SUCCESSFULLY!")
-print("📋 Controls:")
-print("   B - Start/Stop Buying")
-print("   G - Toggle AFK Mode")
-print("   Delete - Panic Stop")
-print("   RightCtrl - Hide GUI")
-print("=" .. string.rep("=", 50))
+print("🎁 Auto Collect Mode Added (Free & Safe)!")
+print("   C - Toggle Auto Collect")
+print("   Range: " .. AutoCollect.Range .. " studs")
+print("   ⚠️ NEVER touches donate buttons!")
